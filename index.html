@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bunny Hop: Pro Tablet Edition</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: #1a1a1a;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        .handheld-container {
+            display: flex;
+            align-items: center;
+            position: relative;
+        }
+
+        .grip {
+            width: 120px;
+            height: 340px;
+            background: #2d3436;
+            border-radius: 60px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 2;
+            position: relative;
+        }
+
+        .grip-left { margin-right: -40px; }
+        .grip-right { margin-left: -40px; }
+
+        .tablet-unit {
+            width: 650px;
+            height: 400px;
+            background: white;
+            border-radius: 30px;
+            border: 2px solid #ddd;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            z-index: 1;
+            padding: 0 40px;
+        }
+
+        .screen-bezel {
+            background: #000;
+            padding: 8px;
+            border-radius: 5px;
+        }
+
+        canvas {
+            background: #87CEEB;
+            display: block;
+            border-radius: 4px;
+            cursor: pointer;
+            touch-action: none;
+        }
+
+        .joystick { width: 40px; height: 40px; background: #111; border-radius: 50%; margin-bottom: 20px; border: 3px solid #444; }
+        .dpad { width: 50px; height: 50px; background: #111; clip-path: polygon(35% 0%, 65% 0%, 65% 35%, 100% 35%, 100% 65%, 65% 65%, 65% 100%, 35% 100%, 35% 65%, 0% 65%, 0% 35%, 35% 35%); }
+        
+        .abxy-group { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .tiny-btn { width: 25px; height: 25px; background: #111; border-radius: 50%; color: white; font-size: 10px; display: flex; align-items: center; justify-content: center; }
+
+        .tablet-home-btn {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            border: 1px solid #ccc;
+            border-radius: 50%;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .home-left { left: 15px; }
+        .home-right { right: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="handheld-container">
+    <div class="grip grip-left">
+        <div class="joystick"></div>
+        <div class="dpad"></div>
+    </div>
+
+    <div class="tablet-unit">
+        <div class="tablet-home-btn home-left"></div>
+        <div class="screen-bezel">
+            <canvas id="gameCanvas" width="550" height="350"></canvas>
+        </div>
+        <div class="tablet-home-btn home-right"></div>
+    </div>
+
+    <div class="grip grip-right">
+        <div class="abxy-group">
+            <div class="tiny-btn">Y</div>
+            <div class="tiny-btn">X</div>
+            <div class="tiny-btn">B</div>
+            <div class="tiny-btn">A</div>
+        </div>
+        <div class="joystick" style="margin-top:20px;"></div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let score = 0;
+    let highScore = localStorage.getItem("bunnyHighScore") || 0;
+    let gameSpeed = 5;
+    let gravity = 0.8;
+    let isGameOver = false;
+    let gameStarted = false;
+    let isPaused = false;
+    
+    let audioCtx;
+    let musicInterval;
+
+    const bunny = {
+        x: 120, // Moved bunny right so Jump button doesn't cover her
+        y: 260, w: 40, h: 40, dy: 0,
+        jumpForce: -15, grounded: false,
+        draw() {
+            ctx.font = "45px Arial";
+            ctx.fillText("🐰", this.x, this.y + 40);
+        }
+    };
+
+    let trees = [{x: 150}, {x: 400}, {x: 650}];
+    let obstacles = [];
+    let bricks = [];
+    const flowerTypes = ["🌸", "🌻", "🌷", "🌹"];
+    const brickColors = ["#FF5733", "#33FF57", "#3357FF", "#F333FF", "#FFD700"];
+
+    // Buttons moved lower (y: 315) to clear the bunny's path
+    const btns = {
+        jump: { x: 50, y: 315, r: 30, color: "#ff4757", label: "JUMP" },
+        pause: { x: 275, y: 315, r: 30, color: "#3498db", label: "PAUSE" },
+        start: { x: 500, y: 315, r: 30, color: "#2ecc71", label: "START" }
+    };
+
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            startMusicLoop();
+        }
+    }
+
+    function playSound(freq, type = 'sine', duration = 0.1) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = type;
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    }
+
+    function startMusicLoop() {
+        let beat = 0;
+        musicInterval = setInterval(() => {
+            if (gameStarted && !isGameOver && !isPaused) {
+                playSound(beat % 2 === 0 ? 110 : 82, 'triangle', 0.2);
+                if (beat % 4 === 0) playSound(220, 'square', 0.05);
+                beat++;
+            }
+        }, 400);
+    }
+
+    function spawn() {
+        if (Math.random() < 0.02) obstacles.push({ x: canvas.width, icon: flowerTypes[Math.floor(Math.random() * flowerTypes.length)] });
+        if (Math.random() < 0.01) bricks.push({ 
+            x: canvas.width, 
+            y: 80 + Math.random() * 40, 
+            w: 45, 
+            h: 25, 
+            color: brickColors[Math.floor(Math.random() * brickColors.length)] 
+        });
+    }
+
+    function update() {
+        if (!gameStarted || isGameOver || isPaused) return;
+
+        bunny.dy += gravity;
+        bunny.y += bunny.dy;
+        if (bunny.y > 260) { bunny.y = 260; bunny.dy = 0; bunny.grounded = true; }
+
+        trees.forEach(t => { t.x -= 2; if (t.x < -100) t.x = canvas.width + 100; });
+        
+        obstacles.forEach((o, i) => { 
+            o.x -= gameSpeed; 
+            if (o.x > bunny.x && o.x < bunny.x+30 && bunny.y > 230) {
+                isGameOver = true;
+                if (score > highScore) {
+                    highScore = score;
+                    localStorage.setItem("bunnyHighScore", highScore);
+                }
+            }
+            if (o.x < -40) { obstacles.splice(i, 1); score++; }
+        });
+
+        bricks.forEach((b, i) => {
+            b.x -= gameSpeed;
+            if (bunny.x < b.x + b.w && bunny.x + 30 > b.x && bunny.y < b.y + b.h && bunny.y + 30 > b.y) {
+                bricks.splice(i, 1); score += 10; playSound(880, 'sine', 0.1);
+            }
+            if (b.x < -50) bricks.splice(i, 1);
+        });
+        spawn();
+    }
+
+    function drawBtn(btn) {
+        ctx.fillStyle = btn.color;
+        ctx.globalAlpha = 0.7; // Make buttons slightly see-through
+        ctx.beginPath();
+        ctx.arc(btn.x, btn.y, btn.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = "white";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(btn.label, btn.x, btn.y + 4);
+    }
+
+    function draw() {
+        ctx.fillStyle = "#87CEEB"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.font = "70px Arial";
+        trees.forEach(t => ctx.fillText("🌲", t.x, 280));
+        
+        ctx.fillStyle = "#2ecc71"; ctx.fillRect(0, 300, canvas.width, 50);
+
+        bricks.forEach(b => {
+            ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, b.w, b.h);
+            ctx.strokeStyle = "white"; ctx.strokeRect(b.x, b.y, b.w, b.h);
+        });
+
+        bunny.draw();
+        obstacles.forEach(o => { ctx.font = "35px Arial"; ctx.fillText(o.icon, o.x, 295); });
+
+        ctx.fillStyle = "white"; ctx.font = "bold 18px Arial"; ctx.textAlign = "left";
+        ctx.fillText(`SCORE: ${score}`, 20, 30);
+        ctx.fillText(`BEST: ${highScore}`, 20, 55);
+
+        drawBtn(btns.jump);
+        drawBtn(btns.pause);
+        drawBtn(btns.start);
+
+        if (!gameStarted) {
+            ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.fillRect(0,0,canvas.width, canvas.height);
+            ctx.fillStyle = "white"; ctx.textAlign = "center";
+            ctx.fillText("READY? TAP START", 275, 120); // Moved prompt up
+        }
+
+        if (isGameOver) {
+            ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0,0,550,350);
+            ctx.fillStyle = "white"; ctx.textAlign = "center";
+            ctx.fillText("GAME OVER", 275, 120);
+            ctx.fillText(`FINAL SCORE: ${score}`, 275, 150);
+            ctx.fillText("TAP START TO RESTART", 275, 180);
+        }
+        if (isPaused) {
+            ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(0,0,550,350);
+            ctx.fillStyle = "white"; ctx.textAlign = "center";
+            ctx.fillText("PAUSED", 275, 150);
+        }
+
+        requestAnimationFrame(() => { update(); draw(); });
+    }
+
+    function handleInput(e) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        let clientX, clientY;
+        
+        if (e.touches) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else {
+            clientX = e.clientX;
+            clientY = e.clientY;
+        }
+
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const mx = (clientX - rect.left) * scaleX;
+        const my = (clientY - rect.top) * scaleY;
+
+        if (Math.hypot(mx - btns.jump.x, my - btns.jump.y) < btns.jump.r) {
+            if (bunny.grounded && gameStarted && !isGameOver && !isPaused) {
+                bunny.dy = bunny.jumpForce; bunny.grounded = false; playSound(440, 'triangle');
+            }
+        }
+        if (Math.hypot(mx - btns.start.x, my - btns.start.y) < btns.start.r) {
+            if (isGameOver) {
+                score = 0; obstacles = []; bricks = []; isGameOver = false;
+            }
+            if (!gameStarted) initAudio();
+            gameStarted = true;
+            isPaused = false;
+        }
+        if (Math.hypot(mx - btns.pause.x, my - btns.pause.y) < btns.pause.r) {
+            if (gameStarted && !isGameOver) isPaused = !isPaused;
+        }
+    }
+
+    canvas.addEventListener('mousedown', handleInput);
+    canvas.addEventListener('touchstart', handleInput);
+
+    draw();
+</script>
+
+</body>
+</html>
+
+
+
